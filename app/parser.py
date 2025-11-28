@@ -1,222 +1,136 @@
-"""
-parser.py
----------
-This module converts OCR token outputs into structured line items:
-    {
-        "item_name": ...,
-        "item_quantity": ...,
-        "item_rate": ...,
-        "item_amount": ...
-    }
-It uses line grouping + numeric alignment + rule-based filtering.
-"""
-
-from typing import List, Dict, Any
 import re
-import numpy as np
 
-
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
-
-def parse_numeric(text: str):
-    """Convert text to float if numeric-looking."""
-    t = text.replace(",", "").replace("₹", "").strip()
-    t = re.sub(r"[^\d\.\-]", "", t)
+# ----------------------------------------
+# Numeric helper
+# ----------------------------------------
+def is_float(x):
     try:
-        return float(t)
+        float(x)
+        return True
+    except:
+        return False
+
+
+def to_float(x):
+    try:
+        return float(x)
     except:
         return None
 
 
-def is_section_header(text: str) -> bool:
-    """Detects common hospital section headings."""
-    sections = [
-        "consultation",
-        "room charges",
-        "nursing care",
-        "laboratory services",
-        "radiology services",
-        "surgery",
-        "procedure charges",
-        "investigation charges",
-        "others"
-    ]
-    t = text.lower().strip()
-    return any(h in t for h in sections)
-
-
-def is_total_line(text: str) -> bool:
-    """Detects totals/subtotals/grand totals."""
-    return bool(re.search(r"(?i)(total|sub\s*total|grand\s*total)", text))
-
-
-# -------------------------------------------------------------------
-# Line grouping from OCR tokens
-# -------------------------------------------------------------------
-
-def group_tokens_into_lines(tokens: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+# ----------------------------------------
+# Group OCR tokens into rows based on line number
+# ----------------------------------------
+def group_rows(tokens):
     """
-    Groups tokens by line_id, as provided by OCR.
-    Returns a list of lists of tokens belonging to the same line.
+    Groups OCR tokens into line rows based on Tesseract line_num.
+    Each row is sorted left-to-right.
     """
-    lines_map = {}
-    for tok in tokens:
-        line_id = tok["line_id"]
-        if line_id not in lines_map:
-            lines_map[line_id] = []
-        lines_map[line_id].append(tok)
+    rows = {}
+    for t in tokens:
+        ln = t["line_num"]
+        rows.setdefault(ln, []).append(t)
 
-    # Sort tokens inside lines by x-coordinate
-    lines = []
-    for line in lines_map.values():
-        line_sorted = sorted(line, key=lambda t: t["bbox"][0])
-        lines.append(line_sorted)
+    # Sort tokens left → right inside each row
+    for ln in rows:
+        rows[ln] = sorted(rows[ln], key=lambda t: t["x"])
 
-    # Sort overall lines by y-coordinate
-    lines = sorted(lines, key=lambda line: min(t["bbox"][1] for t in line))
-    return lines
+    # Return rows sorted by line number
+    return [rows[k] for k in sorted(rows.keys())]
 
 
-# -------------------------------------------------------------------
-# Column boundary inference (simple and dataset-friendly)
-# -------------------------------------------------------------------
-
-def infer_column_boundaries(lines: List[List[Dict[str, Any]]]) -> List[int]:
+# ----------------------------------------
+# Column-based parsing logic tuned for medical/pharmacy bills
+# ----------------------------------------
+def parse_rows_into_items(rows, page_width):
     """
-    Infer column breakpoints using numeric token alignment:
-    - Rightmost alignment ≈ item_amount column
-    - Next numeric column ≈ rate
-    - Left numeric ≈ quantity
-    Returns list of sorted x positions (column boundaries).
-    """
-    numeric_positions = []
+    Parses bill rows into structured item entries:
+    item_name, quantity, rate, amount
+    
+    This parser is fine-tuned for Sample Document 1/2/3
+    following the column structure.
 
-    for line in lines:
-        xs = []
-        for tok in line:
-            if parse_numeric(tok["text"]) is not None:
-                xs.append(tok["bbox"][0])
-        if xs:
-            numeric_positions.append(xs)
-
-    if not numeric_positions:
-        return []
-
-    # Flatten all numeric token x positions
-    all_xs = np.array([x for line in numeric_positions for x in line])
-
-    # Use k-means logic via quantiles → 3 numeric columns expected
-    # (Qty / Rate / Amount)
-    try:
-        q1 = np.quantile(all_xs, 0.33)
-        q2 = np.quantile(all_xs, 0.66)
-        return [q1, q2]
-    except:
-        return []
-
-
-# -------------------------------------------------------------------
-# Row parsing
-# -------------------------------------------------------------------
-
-def extract_from_line(line: List[Dict[str, Any]], col_boundaries: List[int]) -> Dict[str, Any]:
-    """
-    Given a line of tokens and inferred column boundaries,
-    extract (name, qty, rate, amount).
+    LEFT COLUMN = item description (string)
+    RIGHT COLUMNS = numeric columns for qty / rate / amount
     """
 
-    words = [tok["text"] for tok in line]
-    full_text = " ".join(words).strip()
+    items = []
 
-    # If no numeric value at all → not an item
-    numeric_vals = [parse_numeric(w) for w in words]
-    numeric_clean = [n for n in numeric_vals if n is not None]
-    if not numeric_clean:
-        return None
+    # Define column zones (empirical from your documents)
+    col_name_max_x = page_width * 0.55   # everything left of this is item-name space
+    col_numeric_min_x = page_width * 0.40  # numeric columns are usually to the right
+    max_item_amount = 200000    # safety threshold to remove OCR errors
+    max_item_rate = 50000
+    max_item_qty = 500
 
-    # Assign columns based on X positions:
-    qty_val, rate_val, amt_val = None, None, None
-    name_tokens = []
+    for row in rows:
+        # ----------------------------
+        # 1. Split tokens into name-side and numeric-side
+        # ----------------------------
+        name_tokens = [t for t in row if t["x"] < col_name_max_x and not is_float(t["text"])]
+        numeric_tokens = [t for t in row if t["x"] > col_numeric_min_x and is_float(t["text"])]
 
-    for tok in line:
-        txt = tok["text"]
-        num = parse_numeric(txt)
-        x = tok["bbox"][0]
+        # Ignore rows that clearly do not represent items (headers, blank)
+        if len(name_tokens) == 0:
+            continue
 
-        if num is None:
-            name_tokens.append(txt)
+        # Construct item name by joining left-side text
+        item_name = " ".join(t["text"] for t in name_tokens).strip()
+
+        # ----------------------------------------
+        # 2. Extract numeric columns: qty, rate, amount
+        # ----------------------------------------
+        nums = [to_float(t["text"]) for t in numeric_tokens]
+        nums = [x for x in nums if x is not None]
+
+        if len(nums) == 0:
+            # Could be name-only line
+            continue
+
+        # Sort values small → large to guess qty, rate, amount
+        nums_sorted = sorted(nums)
+
+        qty = rate = amount = None
+
+        # Heuristic mapping:
+        # Usually: Quantity < Rate < Amount/NetAmount
+        if len(nums_sorted) >= 3:
+            qty, rate, amount = nums_sorted[-3:]
+        elif len(nums_sorted) == 2:
+            qty, rate = nums_sorted
+            amount = qty * rate
         else:
-            # Decide whether token falls in qty, rate, or amount column
-            if not col_boundaries:
-                # Fallback: last numeric value is amount
-                amt_val = num
-            else:
-                if x < col_boundaries[0]:
-                    qty_val = num
-                elif x < col_boundaries[1]:
-                    rate_val = num
-                else:
-                    amt_val = num
-
-    # If no amount detected, fallback to last numeric
-    if amt_val is None and numeric_clean:
-        amt_val = numeric_clean[-1]
-
-    # Normalize name
-    item_name = " ".join(name_tokens).strip()
-
-    if len(item_name) < 2:
-        return None
-
-    return {
-        "item_name": item_name,
-        "item_quantity": round(float(qty_val), 2) if qty_val is not None else None,
-        "item_rate": round(float(rate_val), 2) if rate_val is not None else None,
-        "item_amount": round(float(amt_val), 2) if amt_val is not None else None
-    }
-
-
-# -------------------------------------------------------------------
-# Main Function
-# -------------------------------------------------------------------
-
-def extract_line_items(tokens: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Main entry point:
-    - Groups tokens into lines
-    - Infers columns
-    - Parses each line into an item
-    - Removes section headers & totals
-    """
-    lines = group_tokens_into_lines(tokens)
-
-    # Infer columns
-    col_boundaries = infer_column_boundaries(lines)
-
-    extracted = []
-
-    for line in lines:
-        words = [tok["text"] for tok in line]
-        full_line = " ".join(words).strip()
-
-        # Skip section headers
-        if is_section_header(full_line):
             continue
 
-        # Skip totals/subtotals
-        if is_total_line(full_line):
+        # ----------------------------------------
+        # 3. Strict numeric rules
+        # ----------------------------------------
+        if not (0 < qty <= max_item_qty):
+            continue
+        if not (0 < rate <= max_item_rate):
+            continue
+        if not (0 < amount <= max_item_amount):
             continue
 
-        item = extract_from_line(line, col_boundaries)
-        if item is None:
+        # Consistency rule: amount ≈ qty * rate (±10%)
+        if abs(amount - qty * rate) > max(5, amount * 0.15):
             continue
 
-        # Must have amount to be valid
-        if item["item_amount"] is None:
+        # ----------------------------------------
+        # 4. Avoid duplicate junk like "0.00 0.00"
+        # ----------------------------------------
+        if amount == 0 or rate == 0:
             continue
 
-        extracted.append(item)
+        # ----------------------------------------
+        # 5. Add item
+        # ----------------------------------------
+        item = {
+            "item_name": item_name,
+            "item_quantity": round(qty, 2),
+            "item_rate": round(rate, 2),
+            "item_amount": round(amount, 2)
+        }
+        items.append(item)
 
-    return extracted
+    return items

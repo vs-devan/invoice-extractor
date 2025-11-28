@@ -6,12 +6,9 @@ uvicorn
 pytesseract
 pdf2image
 Pillow
+opencv-python-headless
 # --- Numbers, Arrays, Fuzzy Matching ---
 numpy
+python-multipart==0.0.9
 rapidfuzz
-
-# --- HTTP Requests ---
-requests
-
-# --- Testing ---
-pytest
+pydantic

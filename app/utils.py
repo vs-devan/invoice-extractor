@@ -1,131 +1,129 @@
-"""
-utils.py
---------
-Shared utility functions used by parser, postproc, and main API.
-
-Includes:
-    - Numeric parsing
-    - Text normalization
-    - Logging helper
-    - Common regex cleaning
-"""
-
+import os
 import re
-import logging
+import requests
+import tempfile
 
-
-# ------------------------------------------------------
-# Logger Setup
-# ------------------------------------------------------
-
-def get_logger(name: str = "invoice_extractor"):
-    """Create or retrieve a logger."""
-    logger = logging.getLogger(name)
-    if not logger.handlers:
-        logger.setLevel(logging.INFO)
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "[%(asctime)s] [%(levelname)s] %(message)s",
-            "%Y-%m-%d %H:%M:%S"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-    return logger
-
-
-logger = get_logger()
-
-
-# ------------------------------------------------------
-# Number Parsing Helpers
-# ------------------------------------------------------
-
-def safe_float(text: str):
+# --------------------------------------------
+# Download document from a URL → local temp file
+# --------------------------------------------
+def download_file(url: str, suffix=".pdf"):
     """
-    Converts text into float safely.
-    Handles:
-        - "1,234.50"
-        - "₹ 180.00"
-        - "(150.00)"
-        - "- 200"
-    Returns None if parse fails.
+    Downloads document from URL and saves it to a temporary local file.
+    Supports PDF, PNG, JPG.
     """
-    if text is None:
-        return None
-
-    s = str(text)
-    s = s.replace(",", "").replace("₹", "").strip()
-
-    # Handle negative in parentheses: (150.00)
-    if re.match(r"^\(\s*\d+(\.\d+)?\s*\)$", s):
-        s = "-" + s.replace("(", "").replace(")", "")
-
-    # Keep only digits, dot, and minus
-    s = re.sub(r"[^0-9.\-]", "", s)
-
     try:
-        return float(s)
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+
+        # Detect content type
+        ct = resp.headers.get("Content-Type", "").lower()
+
+        if "pdf" in ct:
+            suffix = ".pdf"
+        elif "png" in ct:
+            suffix = ".png"
+        elif "jpg" in ct or "jpeg" in ct:
+            suffix = ".jpg"
+        else:
+            # fallback
+            suffix = suffix
+
+        f = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        f.write(resp.content)
+        f.close()
+        return f.name
+
+    except Exception as e:
+        raise RuntimeError(f"Failed to download file: {str(e)}")
+
+
+# --------------------------------------------
+# Page-type detection logic
+# --------------------------------------------
+def detect_page_type(tokens):
+    """
+    Determines the page type based on token content.
+    Types:
+        - Pharmacy
+        - Final Bill
+        - Bill Detail
+    """
+    text = " ".join(t["text"].lower() for t in tokens)
+
+    # Strong markers of pharmacy pages
+    pharmacy_markers = [
+        "tab", "tablet", "cap", "capsule",
+        "syrup", "syp", "inj", "injection",
+        "ointment", "cream", "ml", "mg"
+    ]
+
+    # Markers of final summary
+    final_bill_markers = [
+        "final bill",
+        "summary",
+        "consolidated",
+        "settlement",
+        "net payable",
+        "gross amount",
+        "net amount"
+    ]
+
+    if any(w in text for w in pharmacy_markers):
+        return "Pharmacy"
+    if any(w in text for w in final_bill_markers):
+        return "Final Bill"
+
+    # Default to bill detail
+    return "Bill Detail"
+
+
+# --------------------------------------------
+# Numeric helpers
+# --------------------------------------------
+def is_float(x):
+    try:
+        float(x)
+        return True
+    except:
+        return False
+
+
+def to_float(x):
+    try:
+        return float(x)
     except:
         return None
 
 
-# ------------------------------------------------------
-# Text Cleanup
-# ------------------------------------------------------
-
-def clean_text(text: str) -> str:
-    """Trim whitespace and collapse multiple spaces."""
-    if text is None:
+# --------------------------------------------
+# Text cleaning helpers
+# --------------------------------------------
+def clean_text(t):
+    if not t:
         return ""
-    t = str(text)
-    t = t.replace("\n", " ")
+    t = t.strip()
     t = re.sub(r"\s+", " ", t)
-    return t.strip()
+    t = re.sub(r"[^0-9A-Za-z()%\-./ ]", "", t)
+    return t
 
 
-def normalize_text(text: str) -> str:
-    """
-    Lowercase, remove punctuation, collapse whitespace.
-    Useful for fuzzy comparisons & dedup.
-    """
-    if not text:
-        return ""
-    t = clean_text(text).lower()
-    t = re.sub(r"[^a-z0-9\s]", "", t)
-    t = re.sub(r"\s+", " ", t)
-    return t.strip()
+def normalize_name(name):
+    name = str(name).strip()
+    name = re.sub(r"\s+", " ", name)
+    name = re.sub(r"[^0-9A-Za-z()\-./ ]", "", name)
+    return name
 
 
-# ------------------------------------------------------
-# Regex Convenience Wrappers
-# ------------------------------------------------------
-
-def contains_total_keyword(text: str) -> bool:
-    """Detects 'total', 'subtotal', 'grand total' in a safe fuzzy way."""
-    if not text:
-        return False
-    return bool(re.search(r"(?i)(total|sub\s*total|grand\s*total)", text))
+# --------------------------------------------
+# Bounding box helpers (optional but safe)
+# --------------------------------------------
+def bbox_center(token):
+    return token["x"] + token["w"] / 2, token["y"] + token["h"] / 2
 
 
-def contains_section_keyword(text: str) -> bool:
-    """
-    Detects typical hospital bill section headings used in sample PDFs.
-    You can extend this list as needed.
-    """
-    if not text:
-        return False
-
-    sections = [
-        "consultation",
-        "room charges",
-        "nursing care",
-        "laboratory services",
-        "radiology services",
-        "surgery",
-        "procedure",
-        "investigation",
-        "others",
-    ]
-
-    t = text.lower()
-    return any(sec in t for sec in sections)
+# --------------------------------------------
+# Debug helper (optional)
+# --------------------------------------------
+def print_tokens(tokens):
+    for t in tokens:
+        print(f"{t['text']:20s}  x={t['x']:<4d} y={t['y']:<4d} line={t['line_num']}")

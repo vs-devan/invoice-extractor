@@ -1,124 +1,116 @@
-"""
-main.py
--------
-Final integrated FastAPI application with:
-- Document download
-- PDF/image loading
-- OCR (tesseract)
-- Parsing into line items
-- Postprocessing (dedup, subtotal removal, reconciliation)
-- Logging
-
-Endpoint:
-POST /extract-bill-data
-"""
-
-import traceback
 from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import Dict, Any
+from fastapi.middleware.cors import CORSMiddleware
+import traceback
+import logging
 
-# Internal modules
-from app.utils import logger
-from app.ocr import download_document, load_document_as_images, run_ocr_page
-from app.parser import extract_line_items
-from app.postproc import postprocess_items
+from app.utils import download_file, detect_page_type
+from app.ocr import load_document, extract_tokens
+from app.parser import group_rows, parse_rows_into_items
+from app.postproc import filter_items_strict
 
 
-# ---------------------------------------------------------------------
-# FastAPI App
-# ---------------------------------------------------------------------
-app = FastAPI(
-    title="Bill Extraction API",
-    version="1.0",
-    description="Extracts structured line items and totals from invoices."
+# ----------------------------------------------------
+# FASTAPI Initialization
+# ----------------------------------------------------
+app = FastAPI(title="Bajaj Bill Extraction API")
+
+logger = logging.getLogger("uvicorn")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
-# ---------------------------------------------------------------------
-# Request Model
-# ---------------------------------------------------------------------
-class DocRequest(BaseModel):
-    document: str
+# ----------------------------------------------------
+# HEALTH CHECK (Optional)
+# ----------------------------------------------------
+@app.get("/")
+def health_check():
+    return {"status": "running", "message": "HackRx Bill Extraction API"}
 
 
-
-# ---------------------------------------------------------------------
-# Main Endpoint
-# ---------------------------------------------------------------------
-
+# ----------------------------------------------------
+# REQUIRED ENDPOINT
+# POST /extract-bill-data
+# ----------------------------------------------------
 @app.post("/extract-bill-data")
-async def extract_bill_data(req: DocRequest) -> Dict[str, Any]:
+def extract_bill_data(request: dict):
     """
-    Main API endpoint required by the problem statement.
-    Processes the bill and returns extracted line-items + totals.
+    Main pipeline:
+    1. Download document from URL
+    2. Load pages
+    3. OCR each page
+    4. Determine page type
+    5. Extract rows → items (ONLY Pharmacy pages)
+    6. Strict postprocessing
+    7. Return HackRx-compliant JSON
     """
+
     try:
-        logger.info("Received request for document extraction")
-        logger.info(f"Downloading document from URL: {req.document}")
+        # ------------------------------------------------
+        # 1. Validate & download the document
+        # ------------------------------------------------
+        if "document" not in request:
+            return {
+                "is_success": False,
+                "message": "Missing 'document' field in request"
+            }
 
-        # 1. Download file
-        local_path = download_document(req.document)
-        logger.info(f"Document downloaded to: {local_path}")
+        url = request["document"]
+        logger.info(f"Downloading document: {url}")
 
-        # 2. Convert to images
-        pages = load_document_as_images(local_path)
-        logger.info(f"Loaded {len(pages)} page(s) from the file")
+        local_path = download_file(url)
+        logger.info(f"Document saved at: {local_path}")
+
+        # ------------------------------------------------
+        # 2. Load PDF pages
+        # ------------------------------------------------
+        pages = load_document(local_path)
+        logger.info(f"Loaded {len(pages)} pages")
 
         pagewise_output = []
-        all_raw_items = []
-        def detect_page_type(tokens):
-            text = " ".join([t["text"].lower() for t in tokens])
+        total_items = 0
 
-            if any(x in text for x in ["tab", "tablet", "cap", "capsule", "syrup", "syp"]):
-                return "Pharmacy"
-
-            if any(x in text for x in ["final bill", "summary", "total payable"]):
-                return "Final Bill"
-
-            return "Bill Detail"
-        # 3. OCR + Parse Pages
-        for idx, page_img in enumerate(pages, start=1):
+        # ------------------------------------------------
+        # 3. Process each page
+        # ------------------------------------------------
+        for idx, page in enumerate(pages, start=1):
             logger.info(f"Processing page {idx}...")
 
-            # OCR tokens
-            tokens = run_ocr_page(page_img)
-            logger.info(f"OCR produced {len(tokens)} tokens on page {idx}")
+            # 3.1 OCR extraction
+            tokens = extract_tokens(page)
+            logger.info(f"Extracted {len(tokens)} tokens from page {idx}")
 
-            # Parse tokens → raw line items
-            items = extract_line_items(tokens)
-            logger.info(f"Extracted {len(items)} raw items on page {idx}")
+            # 3.2 Page-type detection
+            page_type = detect_page_type(tokens)
+            logger.info(f"Page {idx} classified as: {page_type}")
 
-            # Store page-level items before postprocessing
-            if len(items) > 0:
-                page_type = detect_page_type(tokens)
+            # 3.3 Group OCR tokens into line rows
+            rows = group_rows(tokens)
 
-                pagewise_output.append({
-                    "page_no": str(idx),
-                    "page_type": page_type,
-                    "bill_items": items
-                })
-            # Keep accumulating for global reconciliation
-            all_raw_items.extend(items)
+            # 3.4 Extract items ONLY for Pharmacy pages
+            if page_type == "Pharmacy":
+                raw_items = parse_rows_into_items(rows, page.width)
+                cleaned = filter_items_strict(raw_items)
+                logger.info(f"Page {idx}: {len(cleaned)} cleaned pharmacy items")
+            else:
+                cleaned = []
 
-        logger.info(f"Total raw extracted items across all pages: {len(all_raw_items)}")
+            total_items += len(cleaned)
 
-        # 4. Postprocessing (dedup, subtotal removal, reconciliation)
-        processed = postprocess_items(all_raw_items)
-        logger.info(f"Postprocessed {processed['total_item_count']} final items")
-        logger.info(f"Reconciled amount = {processed['reconciled_amount']}")
+            pagewise_output.append({
+                "page_no": str(idx),
+                "page_type": page_type,
+                "bill_items": cleaned
+            })
 
-        # Attach cleaned items back into per-page structure
-        # (flat split across pages in order)
-        flat = processed["items"]
-        for page in pagewise_output:
-            count = len(page["bill_items"])
-            page["bill_items"] = flat[:count]
-            flat = flat[count:]
-
-        # 5. Final response
-        logger.info("Returning successful response")
-
+        # ------------------------------------------------
+        # 4. Final HackRx-compliant response
+        # ------------------------------------------------
         return {
             "is_success": True,
             "token_usage": {
@@ -128,14 +120,16 @@ async def extract_bill_data(req: DocRequest) -> Dict[str, Any]:
             },
             "data": {
                 "pagewise_line_items": pagewise_output,
-                "total_item_count": processed["total_item_count"]
+                "total_item_count": total_items
             }
         }
+
     except Exception as e:
-        logger.error("Exception while processing the document")
+        logger.error("Error during processing:")
         logger.error(traceback.format_exc())
 
+        # HackRx-required error schema
         return {
             "is_success": False,
-            "error": str(e)
+            "message": "Failed to process document. Internal server error occurred"
         }

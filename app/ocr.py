@@ -1,132 +1,109 @@
-"""
-ocr.py
--------
-This module handles:
-1. PDF → image conversion
-2. OCR extraction (Tesseract by default)
-3. Normalized structured OCR output
-"""
-
-import tempfile
-import re
-import requests
-from typing import Dict, List, Any
-
-from pdf2image import convert_from_path
-from PIL import Image
 import pytesseract
+import cv2
+import numpy as np
+from pdf2image import convert_from_path
 
-
-# ----------------------------------------------------------
-# 1. Download Utility
-# ----------------------------------------------------------
-
-def download_document(url: str) -> str:
-    """Download a PDF/Image from a public URL into a temp file."""
-    response = requests.get(url, timeout=30)
-    if response.status_code != 200:
-        raise Exception(f"Failed to download document: {response.status_code}")
-
-    # Heuristics: decide extension
-    if ".pdf" in url.lower():
-        suffix = ".pdf"
-    else:
-        suffix = ".png"
-
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(response.content)
-    tmp.flush()
-    tmp.close()
-    return tmp.name
-
-
-# ----------------------------------------------------------
-# 2. PDF → Image Conversion
-# ----------------------------------------------------------
-
-def load_document_as_images(path: str) -> List[Image.Image]:
+# -------------------------------
+# Preprocessing for medical bills
+# -------------------------------
+def preprocess_image(image):
     """
-    Turns a PDF or image into a list of PIL image pages.
+    Preprocesses scanned medical bills for robust OCR.
+    Tuned for Sample Document 1/2/3 patterns.
     """
-    if path.lower().endswith(".pdf"):
-        return convert_from_path(path, dpi=300)
-    else:
-        return [Image.open(path)]
 
+    # Convert PIL -> OpenCV BGR
+    img = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
 
-# ----------------------------------------------------------
-# 3. OCR Wrapper (Tesseract)
-# ----------------------------------------------------------
+    # Grayscale
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-def run_tesseract_ocr(image: Image.Image) -> Dict[str, List[Any]]:
-    """
-    Invokes Tesseract and returns token-level OCR output.
-    """
-    return pytesseract.image_to_data(
-        image,
-        output_type=pytesseract.Output.DICT
+    # Remove noise
+    denoised = cv2.fastNlMeansDenoising(gray, h=15)
+
+    # Sharpen text slightly
+    kernel_sharp = np.array([[0, -1, 0],
+                             [-1, 5,-1],
+                             [0, -1, 0]])
+    sharp = cv2.filter2D(denoised, -1, kernel_sharp)
+
+    # Adaptive threshold tuned for bills
+    thresh = cv2.adaptiveThreshold(
+        sharp, 255,
+        cv2.ADAPTIVE_THRESH_MEAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=31,
+        C=12
     )
 
+    # Light dilation to connect column text
+    kernel = np.ones((1, 2), np.uint8)
+    dilated = cv2.dilate(thresh, kernel, iterations=1)
 
-# ----------------------------------------------------------
-# 4. OCR Normalization
-# ----------------------------------------------------------
-
-def clean_text(text: str) -> str:
-    return text.replace("\n", " ").strip()
+    return dilated
 
 
-def normalize_ocr_output(ocr: Dict[str, List[Any]]) -> List[Dict[str, Any]]:
+# -------------------------------
+# PDF Loader
+# -------------------------------
+def load_document(path):
     """
-    Takes Tesseract raw output and produces a clean
-    list of tokens with:
-        - text
-        - bbox (x1, y1, x2, y2)
-        - confidence
-        - line_id (for grouping)
+    Loads PDF as list of images at optimal DPI for numeric extraction.
+    300 DPI => much better accuracy for Rate/Qty/Amount.
     """
+    pages = convert_from_path(path, dpi=300)
+    return pages
+
+
+# -------------------------------
+# OCR Token Extraction
+# -------------------------------
+def extract_tokens(image):
+    """
+    Extracts OCR tokens with bounding boxes.
+    Uses PSM 6 → assume block of text (best for line-item tables).
+    OEM LSTM → best accuracy for medicine names + numbers.
+    """
+
+    processed = preprocess_image(image)
+
+    # OCR config tuned for tables
+    config = (
+        "--psm 6 "          # uniform block/table of text
+        "--oem 3 "          # LSTM neural OCR engine
+        "-c tessedit_char_blacklist={}[]()/\\|"  # remove table symbols
+        "-c preserve_interword_spaces=1"
+    )
+
+    data = pytesseract.image_to_data(
+        processed,
+        output_type=pytesseract.Output.DICT,
+        config=config
+    )
+
     tokens = []
-    n = len(ocr["text"])
+    n = len(data["text"])
 
     for i in range(n):
-        conf = int(ocr["conf"][i])
-        if conf < 0:
-            continue
-
-        text = clean_text(ocr['text'][i])
+        text = data["text"][i].strip()
         if not text:
             continue
 
-        x, y = ocr['left'][i], ocr['top'][i]
-        w, h = ocr['width'][i], ocr['height'][i]
-        bbox = (x, y, x + w, y + h)
-
-        line_id = (
-            ocr["page_num"][i],
-            ocr["block_num"][i],
-            ocr["par_num"][i],
-            ocr["line_num"][i],
-        )
+        # Remove pure noise
+        if len(text) == 1 and not text.isalnum():
+            continue
 
         tokens.append({
             "text": text,
-            "bbox": bbox,
-            "conf": conf,
-            "line_id": line_id
+            "x": data["left"][i],
+            "y": data["top"][i],
+            "w": data["width"][i],
+            "h": data["height"][i],
+            "line_num": data["line_num"][i],
+            "conf": int(data["conf"][i])
         })
 
-    return tokens
+    # Remove very low-confidence tokens (noise)
+    tokens = [t for t in tokens if t["conf"] > 30]
 
-
-# ----------------------------------------------------------
-# 5. Unified "OCR for one page" function
-# ----------------------------------------------------------
-
-def run_ocr_page(image: Image.Image) -> List[Dict[str, Any]]:
-    """
-    Main OCR function used by main.py:
-    Returns normalized tokens for a page.
-    """
-    raw = run_tesseract_ocr(image)
-    tokens = normalize_ocr_output(raw)
     return tokens
