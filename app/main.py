@@ -67,7 +67,16 @@ async def extract_bill_data(req: DocRequest) -> Dict[str, Any]:
 
         pagewise_output = []
         all_raw_items = []
+        def detect_page_type(tokens):
+            text = " ".join([t["text"].lower() for t in tokens])
 
+            if any(x in text for x in ["tab", "tablet", "cap", "capsule", "syrup", "syp"]):
+                return "Pharmacy"
+
+            if any(x in text for x in ["final bill", "summary", "total payable"]):
+                return "Final Bill"
+
+            return "Bill Detail"
         # 3. OCR + Parse Pages
         for idx, page_img in enumerate(pages, start=1):
             logger.info(f"Processing page {idx}...")
@@ -82,11 +91,13 @@ async def extract_bill_data(req: DocRequest) -> Dict[str, Any]:
 
             # Store page-level items before postprocessing
             if len(items) > 0:
+                page_type = detect_page_type(tokens)
+
                 pagewise_output.append({
                     "page_no": str(idx),
+                    "page_type": page_type,
                     "bill_items": items
                 })
-
             # Keep accumulating for global reconciliation
             all_raw_items.extend(items)
 
@@ -110,13 +121,16 @@ async def extract_bill_data(req: DocRequest) -> Dict[str, Any]:
 
         return {
             "is_success": True,
+            "token_usage": {
+                "total_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0
+            },
             "data": {
                 "pagewise_line_items": pagewise_output,
-                "total_item_count": processed["total_item_count"],
-                "reconciled_amount": processed["reconciled_amount"]
+                "total_item_count": processed["total_item_count"]
             }
         }
-
     except Exception as e:
         logger.error("Exception while processing the document")
         logger.error(traceback.format_exc())
