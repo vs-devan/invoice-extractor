@@ -51,7 +51,7 @@ def load_document(path):
     Loads PDF as list of images at optimal DPI for numeric extraction.
     300 DPI => much better accuracy for Rate/Qty/Amount.
     """
-    pages = convert_from_path(path, dpi=300)
+    pages = convert_from_path(path, dpi=200, thread_count=1)
     return pages
 
 
@@ -72,7 +72,8 @@ def extract_tokens(image):
         "--psm 6 "          # uniform block/table of text
         "--oem 3 "          # LSTM neural OCR engine
         "-c tessedit_char_blacklist={}[]()/\\|"  # remove table symbols
-        "-c preserve_interword_spaces=1"
+        "-c preserve_interword_spaces=1" \
+        "omp_num_threads=1"
     )
 
     data = pytesseract.image_to_data(
