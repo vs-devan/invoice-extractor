@@ -1,0 +1,17 @@
+# --- Core API Framework ---
+fastapi
+uvicorn
+
+# --- OCR & PDF/Image Processing ---
+pytesseract
+pdf2image
+Pillow
+# --- Numbers, Arrays, Fuzzy Matching ---
+numpy
+rapidfuzz
+
+# --- HTTP Requests ---
+requests
+
+# --- Testing ---
+pytest
