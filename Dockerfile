@@ -1,7 +1,7 @@
 # -----------------------------
-# Base image (lightweight Ubuntu)
+# Base image
 # -----------------------------
-FROM python:3.9-slim
+FROM python:3.10-slim
 
 # -----------------------------
 # Install system dependencies
@@ -15,12 +15,12 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # -----------------------------
-# Set working directory
+# Working directory inside container
 # -----------------------------
 WORKDIR /app
 
 # -----------------------------
-# Copy requirements
+# Copy requirements first (for caching)
 # -----------------------------
 COPY requirements.txt .
 
@@ -30,16 +30,16 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # -----------------------------
-# Copy the application
+# Copy the entire project
 # -----------------------------
 COPY . .
 
 # -----------------------------
-# Expose port
+# Expose API port
 # -----------------------------
 EXPOSE 8000
 
 # -----------------------------
-# Start the FastAPI server
+# Start FastAPI (correct module path!)
 # -----------------------------
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
