@@ -1,3 +1,5 @@
 venv/
 .venv/
 samples/
+app/__pycache__/
+__pycache__/
