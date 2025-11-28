@@ -1,7 +1,7 @@
 # --- Core API Framework ---
 fastapi
 uvicorn
-
+requests
 # --- OCR & PDF/Image Processing ---
 pytesseract
 pdf2image
@@ -9,6 +9,5 @@ Pillow
 opencv-python-headless
 # --- Numbers, Arrays, Fuzzy Matching ---
 numpy
-python-multipart==0.0.9
-rapidfuzz
+python-multipart
 pydantic
