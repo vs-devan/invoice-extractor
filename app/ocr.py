@@ -51,7 +51,7 @@ def load_document(path):
     Loads PDF as list of images at optimal DPI for numeric extraction.
     300 DPI => much better accuracy for Rate/Qty/Amount.
     """
-    pages = convert_from_path(path, dpi=300, thread_count=1)
+    pages = convert_from_path(path, dpi=200, thread_count=1)
     return pages
 
 
