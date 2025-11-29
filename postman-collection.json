@@ -1,0 +1,157 @@
+{
+	"info": {
+		"_postman_id": "a23341a5-9051-44da-9d5f-abf1a4a13586",
+		"name": "HackRx Bill Extraction API Copy",
+		"description": "API collection for bill data extraction hackathon. This collection contains the endpoint to extract bill line items from document images.\n\n**Overview:**\n- Extract bill line items from document images\n- Support for multiple page types: Bill Detail, Final Bill, Pharmacy\n- Returns structured data with token usage information",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "27345862",
+		"_collection_link": "https://aaabfhl.postman.co/workspace/AAA---BFHL~2a949627-78ad-472b-8a0e-cf08e7b80835/collection/27345862-a23341a5-9051-44da-9d5f-abf1a4a13586?action=share&source=collection_link&creator=27345862"
+	},
+	"item": [
+		{
+			"name": "Extract Bill Data",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json",
+						"type": "text"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"document\": \"https://hackrx.blob.core.windows.net/assets/datathon-IIT/sample_2.png?sv=2025-07-05&spr=https&st=2025-11-24T14%3A13%3A22Z&se=2026-11-25T14%3A13%3A00Z&sr=b&sp=r&sig=WFJYfNw0PJdZOpOYlsoAW0XujYGG1x2HSbcDREiFXSU%3D\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{base_url}}/extract-bill-data",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"extract-bill-data"
+					]
+				},
+				"description": "### Extract Bill Data\n\nThis endpoint processes a document image URL and extracts structured bill line item data.\n\n**Request Body:**\n- `document` (string, required): URL to the document image that needs to be processed. The file should be accessible from this URL.\n\n**Response Structure (Success - 200):**\n- `is_success` (boolean): Returns `true` if status code is 200 and response follows valid schema\n- `token_usage` (object): Contains cumulative token counts from all LLM calls\n  - `total_tokens` (integer): Total tokens used across all LLM calls\n  - `input_tokens` (integer): Total input tokens used\n  - `output_tokens` (integer): Total output tokens used\n- `data` (object): Contains the extracted bill data\n  - `pagewise_line_items` (array): Array of items grouped by page\n    - `page_no` (string): Page number\n    - `page_type` (string): Type of page - one of \"Bill Detail\", \"Final Bill\", or \"Pharmacy\"\n    - `bill_items` (array): Array of line items from the bill\n      - `item_name` (string): Name of the item exactly as mentioned in the bill\n      - `item_amount` (float): Net amount of the item post discounts as mentioned in the bill\n      - `item_rate` (float): Rate per unit exactly as mentioned in the bill\n      - `item_quantity` (float): Quantity exactly as mentioned in the bill\n  - `total_item_count` (integer): Total count of items across all pages\n\n**Error Response Structure (4xx/5xx):**\n- `is_success` (boolean): Returns `false` for error responses\n- `message` (string): Descriptive error message explaining what went wrong"
+			},
+			"response": [
+				{
+					"name": "Success Response - Sample Bill",
+					"originalRequest": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"document\": \"https://hackrx.blob.core.windows.net/assets/datathon-IIT/sample_2.png?sv=2025-07-05&spr=https&st=2025-11-24T14%3A13%3A22Z&se=2026-11-25T14%3A13%3A00Z&sr=b&sp=r&sig=WFJYfNw0PJdZOpOYlsoAW0XujYGG1x2HSbcDREiFXSU%3D\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/extract-bill-data",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"extract-bill-data"
+							]
+						}
+					},
+					"status": "OK",
+					"code": 200,
+					"_postman_previewlanguage": "json",
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"cookie": [],
+					"body": "{\n    \"is_success\": true,\n    \"token_usage\": {\n        \"total_tokens\": 1523,\n        \"input_tokens\": 1245,\n        \"output_tokens\": 278\n    },\n    \"data\": {\n        \"pagewise_line_items\": [\n            {\n                \"page_no\": \"1\",\n                \"page_type\": \"Pharmacy\",\n                \"bill_items\": [\n                    {\n                        \"item_name\": \"Livi 300mg Tab\",\n                        \"item_amount\": 448,\n                        \"item_rate\": 32,\n                        \"item_quantity\": 14\n                    },\n                    {\n                        \"item_name\": \"Metnuro\",\n                        \"item_amount\": 124.03,\n                        \"item_rate\": 17.72,\n                        \"item_quantity\": 7\n                    },\n                    {\n                        \"item_name\": \"Pizat 4.5\",\n                        \"item_amount\": 838.12,\n                        \"item_rate\": 419.06,\n                        \"item_quantity\": 2\n                    },\n                    {\n                        \"item_name\": \"Supralite Os Syp\",\n                        \"item_amount\": 289.69,\n                        \"item_rate\": 289.69,\n                        \"item_quantity\": 1\n                    }\n                ]\n            }\n        ],\n        \"total_item_count\": 4\n    }\n}"
+				},
+				{
+					"name": "500 Internal Server Error - Processing Failed",
+					"originalRequest": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"document\": \"https://hackrx.blob.core.windows.net/assets/datathon-IIT/sample_2.png?sv=2025-07-05&spr=https&st=2025-11-24T14%3A13%3A22Z&se=2026-11-25T14%3A13%3A00Z&sr=b&sp=r&sig=WFJYfNw0PJdZOpOYlsoAW0XujYGG1x2HSbcDREiFXSU%3D\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{base_url}}/extract-bill-data",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"extract-bill-data"
+							]
+						}
+					},
+					"status": "Internal Server Error",
+					"code": 500,
+					"_postman_previewlanguage": "json",
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"cookie": [],
+					"body": "{\n    \"is_success\": false,\n    \"message\": \"Failed to process document. Internal server error occurred\"\n}"
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:3000",
+			"type": "string"
+		}
+	]
+}

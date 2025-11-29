@@ -4,3 +4,7 @@ samples/
 app/__pycache__/
 __pycache__/
 tests/
+*.md
+!Readme.md
+models/
+docker/

@@ -108,3 +108,52 @@ def extract_tokens(image):
     tokens = [t for t in tokens if t["conf"] > 30]
 
     return tokens
+
+
+# -------------------------------
+# STEP A: Clean OCR Text Output
+# -------------------------------
+def extract_clean_text(image):
+    """
+    Step A: Initial Processing - Extract clean, reliable text from image.
+    
+    This is the first step of the two-step approach:
+    1. Get clean text output from OCR
+    2. Use this text for structured extraction
+    
+    Returns:
+    - raw_text: Full OCR text output
+    - tokens: Detailed token data with positions for column-based parsing
+    - text_lines: Text organized by line for easier processing
+    """
+    
+    # Extract detailed tokens
+    tokens = extract_tokens(image)
+    
+    # Build raw OCR text
+    raw_text = " ".join(t["text"] for t in tokens)
+    
+    # Group text by line for structured reading
+    lines_dict = {}
+    for t in tokens:
+        ln = t["line_num"]
+        if ln not in lines_dict:
+            lines_dict[ln] = []
+        lines_dict[ln].append(t)
+    
+    # Sort tokens within each line left-to-right
+    text_lines = []
+    for ln in sorted(lines_dict.keys()):
+        line_tokens = sorted(lines_dict[ln], key=lambda t: t["x"])
+        line_text = " ".join(t["text"] for t in line_tokens)
+        text_lines.append({
+            "line_num": ln,
+            "text": line_text,
+            "tokens": line_tokens
+        })
+    
+    return {
+        "raw_text": raw_text,
+        "tokens": tokens,
+        "text_lines": text_lines
+    }

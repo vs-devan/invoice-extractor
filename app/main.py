@@ -4,8 +4,8 @@ import traceback
 import logging
 
 from app.utils import download_file, detect_page_type
-from app.ocr import load_document, extract_tokens
-from app.parser import group_rows, parse_rows_into_items
+from app.ocr import load_document, extract_tokens, extract_clean_text
+from app.extraction import extract_items_from_ocr_text
 from app.postproc import filter_items_strict
 
 
@@ -40,14 +40,18 @@ def health_check():
 @app.post("/extract-bill-data")
 def extract_bill_data(request: dict):
     """
-    Main pipeline:
-    1. Download document from URL
-    2. Load pages
-    3. OCR each page
-    4. Determine page type
-    5. Extract rows → items (ONLY Pharmacy pages)
-    6. Strict postprocessing
-    7. Return HackRx-compliant JSON
+    TWO-STEP PIPELINE:
+    
+    STEP A: Initial Processing (OCR)
+    - Load document
+    - Extract clean, reliable OCR text from image
+    - Get raw text output and organized text lines
+    
+    STEP B: Information Extraction (JSON Generation)
+    - Parse clean OCR text into structured line items
+    - Extract item name, quantity, rate, amount
+    - Apply strict validation and filtering
+    - Return HackRx-compliant JSON
     """
 
     try:
@@ -76,28 +80,43 @@ def extract_bill_data(request: dict):
         total_items = 0
 
         # ------------------------------------------------
-        # 3. Process each page
+        # 3. Process each page with TWO-STEP approach
         # ------------------------------------------------
         for idx, page in enumerate(pages, start=1):
             logger.info(f"Processing page {idx}...")
 
-            # 3.1 OCR extraction
-            tokens = extract_tokens(page)
-            logger.info(f"Extracted {len(tokens)} tokens from page {idx}")
+            # ========== STEP A: Initial OCR Processing ==========
+            logger.info(f"[STEP A] Extracting clean OCR text from page {idx}...")
+            ocr_data = extract_clean_text(page)
+            
+            raw_text = ocr_data["raw_text"]
+            text_lines = ocr_data["text_lines"]
+            
+            logger.info(f"[STEP A] Extracted {len(text_lines)} text lines")
+            logger.debug(f"[STEP A] Raw OCR text (first 200 chars): {raw_text[:200]}")
 
             # 3.2 Page-type detection
-            page_type = detect_page_type(tokens)
+            page_type = detect_page_type(ocr_data["tokens"])
             logger.info(f"Page {idx} classified as: {page_type}")
 
-            # 3.3 Group OCR tokens into line rows
-            rows = group_rows(tokens)
-
-            # 3.4 Extract items ONLY for Pharmacy pages
+            # ========== STEP B: Information Extraction ==========
+            # Only extract items for Pharmacy pages
             if page_type == "Pharmacy":
-                raw_items = parse_rows_into_items(rows, page.width)
+                logger.info(f"[STEP B] Extracting structured items from clean OCR text...")
+                
+                # Parse clean text into structured items
+                raw_items = extract_items_from_ocr_text(text_lines, page.width)
+                logger.info(f"[STEP B] Extracted {len(raw_items)} raw items")
+                
+                # Apply strict filtering and validation
                 cleaned = filter_items_strict(raw_items)
-                logger.info(f"Page {idx}: {len(cleaned)} cleaned pharmacy items")
+                logger.info(f"[STEP B] After filtering: {len(cleaned)} valid items")
+                
+                # Log sample items for debugging
+                if cleaned:
+                    logger.debug(f"[STEP B] Sample item: {cleaned[0]}")
             else:
+                logger.info(f"[STEP B] Skipping item extraction (not a Pharmacy page)")
                 cleaned = []
 
             total_items += len(cleaned)
@@ -111,6 +130,8 @@ def extract_bill_data(request: dict):
         # ------------------------------------------------
         # 4. Final HackRx-compliant response
         # ------------------------------------------------
+        logger.info(f"Pipeline complete. Total items extracted: {total_items}")
+        
         return {
             "is_success": True,
             "token_usage": {
